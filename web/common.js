@@ -54,7 +54,11 @@ function subscribe(onState, onConn){
     es = new EventSource("/api/events");
     es.onopen = () => onConn && onConn(true);
     es.onmessage = e => { try { const s = JSON.parse(e.data); onState(s, Date.now() + (s.remainingMs||0)); } catch(err){} };
-    es.onerror = () => { onConn && onConn(false); };
+    es.onerror = () => {
+      onConn && onConn(false);
+      // Browsers retry on their own, but some give up (readyState 2 = closed). Reopen ourselves.
+      if (es.readyState === 2) setTimeout(() => { if (es.readyState === 2) open(); }, 1500);
+    };
   };
   open();
   // Phones drop connections when the screen locks; reopen on wake.

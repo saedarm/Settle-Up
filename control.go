@@ -103,6 +103,7 @@ func hostPlayer(w http.ResponseWriter, r *http.Request) {
 	}
 	switch in.Action {
 	case "remove":
+		g.removed[p.ID] = p.Token
 		delete(g.players, p.ID)
 		for i, id := range g.order {
 			if id == p.ID {

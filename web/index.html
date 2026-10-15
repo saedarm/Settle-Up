@@ -30,9 +30,16 @@ function save(qi, v){ const a = saved(); a[qi] = v; store.set("settleup:a:" + S.
 function remaining(){ return S && S.paused ? (S.remainingMs||0) : Math.max(0, endAt - Date.now()); }
 function myRow(){ return S && S.board ? S.board.find(r => r.pid === me.pid) : null; }
 
+let joinedAt = 0, rejoinAt = 0, joinErr = "";
 async function joinGame(name){
-  const r = await post("/api/join", {name, pid: me.pid, token: me.token});
-  if (!r.ok) return r.error || "Couldn't join. Try again.";
+  let r;
+  try { r = await post("/api/join", {name, pid: me.pid, token: me.token}); }
+  catch(e){ r = {ok:false, error:"Couldn't reach the game. Check your connection and try again."}; }
+  if (!r.ok){
+    if (r.status === 403){ me = {name: ""}; store.set("settleup:me", me); }  // removed by the host: start fresh
+    joinErr = r.error || "Couldn't join. Try again."; render(); return joinErr;
+  }
+  joinErr = ""; joinedAt = Date.now();
   me = {pid: r.pid, token: r.token, name: r.name}; store.set("settleup:me", me);
   render(); return null;
 }
@@ -44,20 +51,29 @@ function head(label){
 function render(){
   clearInterval(tick);
   $("#meta").textContent = connected ? (S && S.phase !== "idle" ? "Live game" : "Connected") : "Reconnecting…";
-  // Server restarted and forgot us: ask for the name again.
-  const known = !me.pid || !S || S.board.some(r => r.pid === me.pid) || S.phase === "idle";
-  if (!me.pid || !known){
+  // The server doesn't know this phone (it restarted, or the host removed us):
+  // rejoin quietly under the saved name instead of making the player start over.
+  const onBoard = !!(me.pid && S && S.board.some(r => r.pid === me.pid));
+  const justJoined = Date.now() - joinedAt < 4000;
+  // Still waiting for the server to confirm a fresh join: look again once the grace period ends.
+  if (me.name && S && !onBoard && justJoined) setTimeout(render, 4100 - (Date.now() - joinedAt));
+  if (me.name && S && !onBoard && !justJoined && !joinErr){
+    if (Date.now() - rejoinAt > 3000){ rejoinAt = Date.now(); joinGame(me.name); }
+    app.innerHTML = `<section class="receipt"><div class="r-head"><span>Joining</span></div><h2>Joining as ${esc(me.name)}…</h2></section>`;
+    return;
+  }
+  if (!me.name || !me.pid || joinErr){
     app.innerHTML = `<section class="receipt"><div class="r-head"><span>Join</span><span class="tag">Thanksgiving × Halloween</span></div>
       <h1>Estimate payments numbers. Closest guesses win.</h1>
       <p class="ctx">Each question has a real answer from Global Payments research or holiday shopping data. You get one guess per question before the timer runs out.</p>
       <form id="nf" class="stack" style="margin-top:18px" autocomplete="off">
         <label class="lbl" for="nm">Your name on the leaderboard (first name and last initial)</label>
         <div class="field"><input id="nm" maxlength="24" placeholder="e.g. Sam R" value="${esc(me.name||"")}" autocomplete="nickname"></div>
-        <div class="preview err" id="nerr"></div>
+        <div class="preview err" id="nerr">${esc(joinErr)}</div>
         <button class="btn">Join the game</button>
       </form></section>`;
     $("#nf").onsubmit = async e => { e.preventDefault(); const n = $("#nm").value.trim(); if (!n){ $("#nm").focus(); return; }
-      $("#nerr").textContent = (await joinGame(n)) || ""; };
+      joinErr = ""; await joinGame(n); };
     return;
   }
   bindRename();

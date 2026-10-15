@@ -47,12 +47,13 @@ type Game struct {
 	paused  bool
 	left    time.Duration // time left on the clock while paused
 	players map[string]*Player
-	order   []string // join order, for stable display
+	removed map[string]string // pid -> token of players the host removed
+	order   []string          // join order, for stable display
 	subs    map[chan []byte]struct{}
 }
 
 var (
-	game    = &Game{phase: "idle", dur: 45, players: map[string]*Player{}, subs: map[chan []byte]struct{}{}}
+	game    = &Game{phase: "idle", dur: 45, players: map[string]*Player{}, removed: map[string]string{}, subs: map[chan []byte]struct{}{}}
 	byID    = map[string]Question{}
 	hostKey string
 )
@@ -162,7 +163,7 @@ func events(w http.ResponseWriter, r *http.Request) {
 	game.mu.Unlock()
 	defer func() { game.mu.Lock(); delete(game.subs, ch); game.mu.Unlock() }()
 
-	w.Write([]byte("retry: 2000\n"))
+	w.Write([]byte("retry: 1000\n"))
 	writeEvent(w, first)
 	fl.Flush()
 	ping := time.NewTicker(15 * time.Second)
@@ -201,8 +202,15 @@ func join(w http.ResponseWriter, r *http.Request) {
 	g := game
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if tok, gone := g.removed[in.PID]; gone && subtle.ConstantTimeCompare([]byte(tok), []byte(in.Token)) == 1 {
+		log.Printf("join refused: %q was removed by the host", name)
+		writeJSON(w, 403, map[string]string{"error": "The host removed that name. Join with a different one."})
+		return
+	}
 	p := g.players[in.PID]
+	isNew := false
 	if p == nil || subtle.ConstantTimeCompare([]byte(p.Token), []byte(in.Token)) != 1 {
+		isNew = true
 		if len(g.players) >= 500 {
 			writeJSON(w, 503, map[string]string{"error": "The game is full."})
 			return
@@ -212,6 +220,7 @@ func join(w http.ResponseWriter, r *http.Request) {
 		g.order = append(g.order, p.ID)
 	}
 	p.Name = g.uniqueName(name, p.ID)
+	log.Printf("join %q pid=%s new=%v players=%d", p.Name, p.ID, isNew, len(g.players))
 	g.broadcastLocked()
 	writeJSON(w, 200, map[string]string{"pid": p.ID, "token": p.Token, "name": p.Name})
 }
@@ -232,6 +241,7 @@ func answer(w http.ResponseWriter, r *http.Request) {
 	p := g.players[in.PID]
 	switch {
 	case p == nil || subtle.ConstantTimeCompare([]byte(p.Token), []byte(in.Token)) != 1:
+		log.Printf("answer from unknown player pid=%s (server restarted or player removed)", in.PID)
 		writeJSON(w, 401, map[string]string{"error": "rejoin"})
 	case g.phase != "question" || in.QI != g.qi || in.Sid != g.sid || (!g.paused && time.Now().After(g.endsAt.Add(grace))):
 		writeJSON(w, 409, map[string]string{"error": "Time's up for that question."})
@@ -243,6 +253,7 @@ func answer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.Answers[g.qi] = in.Value
+		log.Printf("answer %q q%d = %g", p.Name, g.qi+1, in.Value)
 		// Everyone's in: cut the clock to 3 seconds.
 		if !g.paused && g.allAnsweredLocked() && time.Until(g.endsAt) > 3*time.Second {
 			g.setTimerLocked(3 * time.Second)
