@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#1a1120">
+<title>Settle Up · Host</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<style>body{margin:0}.joinurl{font-family:var(--mono);font-weight:600;font-size:clamp(1.2rem,2.6vw,2.2rem);word-break:break-all;color:var(--gold)}</style>
+</head>
+<body class="hosting">
+<div class="wrap">
+  <header>
+    <div class="brand">Settle<span>Up</span></div>
+    <div class="hdr-right">
+      <span class="meta" id="meta">Host screen</span>
+      <details class="menu" id="menu"><summary>Menu ▾</summary><div class="panel" id="panel"></div></details>
+    </div>
+  </header>
+  <main id="app"><section class="slide"><h1>Loading…</h1></section></main>
+</div>
+<div id="drawer"></div>
+<script src="/static/qrcode.js"></script>
+<script src="/static/common.js"></script>
+<script>
+decorate(9);
+// The host key comes from ?key= once, then lives in this browser.
+const urlKey = new URLSearchParams(location.search).get("key");
+if (urlKey){ store.set("settleup:hostkey", urlKey); history.replaceState(null, "", "/host"); }
+const KEY = store.get("settleup:hostkey") || "";
+const H = {"X-Host-Key": KEY};
+const app = $("#app");
+let S = null, endAt = 0, bank = [], tick = null, playersOpen = false;
+let setup = store.get("settleup:setup") || {dur: 45, sel: null};
+const joinURL = location.origin;
+
+function shuffle(a){ a = a.slice(); for (let i = a.length-1; i > 0; i--){ const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; } return a; }
+function defaultMix(){
+  const by = c => shuffle(bank.filter(q => q.Cat === c).map(q => q.ID));
+  return [...by("pay").slice(0,4), ...by("trends").slice(0,3), ...by("holiday").slice(0,3)];
+}
+async function hpost(path, body){
+  const r = await post("/api/host/" + path, body || {}, H);
+  if (!r.ok && r.error) toast(r.error);
+  return r;
+}
+const remaining = () => S && S.paused ? (S.remainingMs||0) : Math.max(0, endAt - Date.now());
+
+async function load(){
+  const r = await fetch("/api/host/bank", {headers: H});
+  if (!r.ok){
+    $("#menu").hidden = true;
+    app.innerHTML = `<section class="slide"><h1>Host key needed</h1><p class="ctx">Open this page as <b>/host?key=YOUR_HOST_KEY</b>. The key is the HOST_KEY secret set on the server.</p></section>`;
+    return false;
+  }
+  bank = await r.json();
+  const ids = new Set(bank.map(q => q.ID));
+  if (!setup.sel || !setup.sel.length) setup.sel = defaultMix();
+  setup.sel = setup.sel.filter(id => ids.has(id));
+  return true;
+}
+
+/* ---------- menu ---------- */
+// Buttons that need a second click show "Click again to …" first.
+function confirmClick(btn, label, fn){
+  if (btn.dataset.armed){ fn(); return true; }
+  btn.dataset.armed = "1"; const old = btn.firstChild.textContent; btn.firstChild.textContent = label;
+  setTimeout(() => { delete btn.dataset.armed; btn.firstChild.textContent = old; }, 3000);
+  return false;
+}
+function renderMenu(force){
+  if ($("#menu").open && !force) return; // don't redraw under the cursor
+  const ph = S ? S.phase : "idle", inQ = ph === "question", inGame = ph !== "idle";
+  const items = [
+    {id:"adv", label: advLabel(), key:"Space", on: inGame && ph !== "final"},
+    {id:"pause", label: S && S.paused ? "Resume the clock" : "Pause the clock", key:"P", on: inQ},
+    {id:"add", label:"Add 15 seconds", key:"+", on: inQ},
+    {id:"rq", label:"Restart this question", key:"", on: ["question","reveal","board"].includes(ph), confirm:"Click again to wipe this question's guesses"},
+    "hr",
+    {id:"players", label:`Players (${S ? S.board.length : 0})`, key:"", on: true},
+    {id:"csv", label:"Download results (CSV)", key:"", on: inGame},
+    "hr",
+    {id:"rg", label:"Restart the game", key:"", on: inGame, danger:true, confirm:"Click again to wipe all scores"},
+    {id:"end", label:"End game and go to setup", key:"", on: inGame, danger:true, confirm:"Click again to end the game"},
+  ];
+  $("#panel").innerHTML = items.map(it => it === "hr" ? "<hr>" :
+    `<button type="button" data-act="${it.id}" class="${it.danger ? "danger" : ""}" ${it.on ? "" : "disabled"} ${it.confirm ? `data-confirm="${esc(it.confirm)}"` : ""}><span>${esc(it.label)}</span><kbd>${it.key}</kbd></button>`).join("");
+}
+function advLabel(){
+  if (!S) return "Next";
+  return {lobby:"Start question 1", question:"Reveal the answer", reveal: S.qi >= S.total-1 ? "Final results" : "Show standings", board:`Start question ${S.qi+2}`}[S.phase] || "Next";
+}
+const actions = {
+  adv: () => hpost("advance"),
+  pause: () => hpost("pause"),
+  add: () => hpost("addtime").then(r => r.ok && toast("+15 seconds")),
+  rq: () => hpost("restart-question").then(r => r.ok && toast("Question restarted")),
+  rg: () => hpost("restart-game").then(r => r.ok && toast("Scores wiped. Back to the lobby.")),
+  end: () => hpost("end"),
+  players: () => { playersOpen = true; renderPlayers(); },
+  csv: downloadCSV,
+};
+$("#menu").addEventListener("toggle", () => { if ($("#menu").open) renderMenu(true); });
+$("#panel").addEventListener("click", e => {
+  const b = e.target.closest("button[data-act]"); if (!b || b.disabled) return;
+  const run = () => { $("#menu").open = false; actions[b.dataset.act](); };
+  if (b.dataset.confirm){ confirmClick(b, b.dataset.confirm, run); } else run();
+});
+document.addEventListener("click", e => { if (!e.target.closest("#menu")) $("#menu").open = false; });
+
+async function downloadCSV(){
+  const r = await fetch("/api/host/results.csv", {headers: H});
+  if (!r.ok) return toast("Couldn't export the results.");
+  const url = URL.createObjectURL(await r.blob());
+  const a = Object.assign(document.createElement("a"), {href: url, download: "settle-up-results.csv"});
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+/* ---------- players drawer ---------- */
+function renderPlayers(){
+  const d = $("#drawer");
+  if (!playersOpen){ d.innerHTML = ""; return; }
+  const rows = S ? S.board : [];
+  d.innerHTML = `<div class="drawer" id="dz"><div class="sheet" role="dialog" aria-label="Players">
+    <div class="row" style="justify-content:space-between;align-items:center"><h2>Players (${rows.length})</h2><button class="mini" id="closeP">Close</button></div>
+    <p class="src">Rename anyone whose name shouldn't be on the big screen. Removing a player sends their phone back to the join screen.</p>
+    <ul class="plist">${rows.map(r => `<li><span class="nm">${esc(r.name)}</span><button class="mini" data-ren="${r.pid}">Rename</button><button class="mini danger" data-rm="${r.pid}">Remove</button></li>`).join("") || `<li><span class="nm" style="color:var(--muted)">Nobody has joined yet.</span></li>`}</ul>
+    <form id="renF" class="stack" hidden><label class="lbl" for="renI">New name</label><div class="field"><input id="renI" maxlength="24"></div><div class="row"><button class="btn">Save name</button><button type="button" class="ghost" id="renX">Cancel</button></div></form>
+  </div></div>`;
+  let target = null;
+  $("#closeP").onclick = () => { playersOpen = false; renderPlayers(); };
+  $("#dz").onclick = e => { if (e.target.id === "dz"){ playersOpen = false; renderPlayers(); } };
+  d.querySelectorAll("[data-rm]").forEach(b => b.onclick = () => {
+    if (!b.dataset.armed){ b.dataset.armed = "1"; b.textContent = "Sure?"; setTimeout(() => { delete b.dataset.armed; b.textContent = "Remove"; }, 3000); return; }
+    hpost("player", {pid: b.dataset.rm, action: "remove"});
+  });
+  d.querySelectorAll("[data-ren]").forEach(b => b.onclick = () => {
+    target = b.dataset.ren; const r = rows.find(x => x.pid === target);
+    $("#renF").hidden = false; $("#renI").value = r ? r.name : ""; $("#renI").focus(); $("#renI").select();
+  });
+  $("#renX").onclick = () => { $("#renF").hidden = true; };
+  $("#renF").onsubmit = e => { e.preventDefault(); const n = $("#renI").value.trim(); if (!n || !target) return; hpost("player", {pid: target, action: "rename", name: n}); };
+}
+
+/* ---------- slides ---------- */
+function slideTop(label){ return `<div class="slide-top"><span>${label}</span><span class="tag">Settle Up · Thanksgiving × Halloween</span></div>`; }
+
+function render(){
+  clearInterval(tick);
+  renderMenu();
+  if (!S) return;
+  const n = S.total, qi = S.qi, q = S.question;
+  if (S.phase === "idle"){
+    const groups = ["pay","trends","holiday"].map(c => `<li class="lbl" style="padding:10px 10px 4px">${CATS[c]}</li>` +
+      bank.filter(x => x.Cat === c).map(x => `<li><label><input type="checkbox" data-id="${x.ID}" ${setup.sel.includes(x.ID) ? "checked" : ""}><span>${chip(x.Cat)}</span><span>${esc(x.Q)} <span class="src">· ${esc(fmt(x.A, x.Pre))}</span></span></label></li>`).join("")).join("");
+    app.innerHTML = `<section class="slide">
+      <div class="slide-top"><span>Host setup</span><span id="pcount">${S.board.length} players joined</span></div>
+      <h1>Set up the breakfast game</h1>
+      <div class="two">
+        <div class="stack"><div class="row" style="justify-content:space-between;align-items:baseline"><span class="lbl" id="selc">${setup.sel.length} questions selected</span><button class="link" id="remix">Pick a fresh 10-question mix</button></div>
+          <ul class="pick" id="pick">${groups}</ul></div>
+        <div class="stack">
+          <label class="lbl" for="dur">Time per question</label>
+          <select class="sel" id="dur">${[20,30,45,60,90].map(s => `<option value="${s}" ${+setup.dur===s ? "selected" : ""}>${s} seconds</option>`).join("")}</select>
+          <p class="src">Answers are shown next to each question here so you can choose. Phones never get an answer until its reveal.</p>
+          <p class="src">Questions are shuffled when the game starts. During the game, the Menu has pause, extra time, restarts, players and results.</p>
+          <button class="btn" id="start" style="margin-top:10px" ${setup.sel.length ? "" : "disabled"}>Open the lobby →</button>
+        </div>
+      </div></section>`;
+    $("#pick").onchange = e => { const id = e.target.dataset.id; if (!id) return;
+      setup.sel = e.target.checked ? [...new Set([...setup.sel, id])] : setup.sel.filter(x => x !== id);
+      store.set("settleup:setup", setup); $("#selc").textContent = setup.sel.length + " questions selected"; $("#start").disabled = !setup.sel.length; };
+    $("#remix").onclick = () => { setup.sel = defaultMix(); store.set("settleup:setup", setup); render(); };
+    $("#dur").onchange = e => { setup.dur = +e.target.value; store.set("settleup:setup", setup); };
+    $("#start").onclick = () => hpost("start", {ids: shuffle(setup.sel), dur: setup.dur});
+    return;
+  }
+  if (S.phase === "lobby"){
+    app.innerHTML = `<section class="slide">${slideTop(`Lobby · ${n} questions · ${S.dur}s each`)}
+      <div class="two"><div class="stack"><h1 style="font-size:clamp(1.6rem,3.3vw,2.9rem)">Grab your phone. Estimate payments numbers. Closest guesses win.</h1>
+          <p class="ctx">Scan the code or go to the address below and enter your name. One guess per question before the clock runs out. Dead on is 1,000 points, ten times off is 500, a hundred times off is zero.</p>
+          <div class="joinurl">${esc(joinURL.replace(/^https?:\/\//, ""))}</div></div>
+        <div class="lobby-side"><figure class="nick"><img src="/static/nick.jpg" alt="Nick in a turkey costume with a witch hat, holding a giant Global Payments card"><figcaption>Nick dressed for both holidays.<br>Least you can do is guess.</figcaption></figure><div class="qr" id="qr" aria-label="QR code for ${esc(joinURL)}"></div></div></div>
+      <div class="stack"><div class="lbl">${S.board.length} ${S.board.length === 1 ? "player" : "players"} in</div>
+        <div class="names">${S.board.map(r => `<span>${esc(r.name)}</span>`).join("") || '<span style="color:var(--muted)">Waiting for the first player…</span>'}</div></div>
+      <div class="slide-foot"><span class="src">Space or → advances</span><button class="btn" id="adv">Start question 1 →</button></div></section>`;
+    if (window.qrcode){ try { const qr = qrcode(0, "M"); qr.addData(joinURL); qr.make(); $("#qr").innerHTML = qr.createSvgTag({cellSize: 8, margin: 0, scalable: true}); } catch(e){} }
+  } else if (S.phase === "question" && q){
+    app.innerHTML = `<section class="slide">${slideTop(`Question ${qi+1} of ${n}`)}
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${chip(q.Cat)}${S.paused ? '<span class="paused-pill">Paused</span>' : ""}</div>
+      <h1>${esc(q.Q)}</h1><p class="ctx">${esc(q.Ctx)}</p>
+      <div class="bar" id="hbar"><i style="width:100%"></i></div>
+      <div class="slide-foot"><div><div class="clock" id="clock">--</div><div class="answered">${S.answered} of ${S.board.length} locked in</div></div>
+        <div class="ctrls"><button class="ghost" id="pz">${S.paused ? "Resume" : "Pause"}</button><button class="ghost" id="add">+15s</button><button class="btn" id="adv">Reveal the answer →</button></div></div></section>`;
+    $("#pz").onclick = actions.pause; $("#add").onclick = actions.add;
+    const t = () => { const r = remaining(), c = $("#clock"); if (!c) return clearInterval(tick);
+      c.textContent = Math.ceil(r/1000); c.classList.toggle("hurry", r < 10000 && !S.paused);
+      $("#hbar").firstChild.style.width = Math.min(100, r / (S.dur*1000) * 100) + "%"; $("#hbar").classList.toggle("hurry", r < 10000); };
+    t(); if (!S.paused) tick = setInterval(t, 250);
+  } else if (S.phase === "reveal" && q && S.reveal){
+    const rv = S.reveal, best = rv.guesses[0];
+    app.innerHTML = `<section class="slide">${slideTop(`Question ${qi+1} of ${n} · the answer`)}
+      <h2 style="font-size:clamp(1.1rem,2vw,1.6rem)">${esc(q.Q)}</h2>
+      <div class="two"><div class="stack"><div class="reveal-num">${esc(fmt(rv.a, q.Pre))}</div><p class="ctx">${esc(q.Unit||"")}</p>
+          ${strip(rv.a, rv.guesses.map(x => x.g))}
+          <p class="answered">${rv.guesses.length} ${rv.guesses.length === 1 ? "guess" : "guesses"}${best ? ` · closest: <b style="color:var(--good)">${esc(best.name)}</b> at ${esc(fmt(best.g, q.Pre))} (${rfmt(best.ratio)})` : ""}</p></div>
+        <div class="stack"><div class="napkin"><div class="lbl">Napkin math</div><p style="font-size:clamp(1rem,1.5vw,1.25rem)">${esc(rv.math)}</p></div>${srcLine(rv)}</div></div>
+      <div class="slide-foot"><span class="src">Space or → advances</span><button class="btn" id="adv">${qi >= n-1 ? "Final results →" : "Standings →"}</button></div></section>`;
+  } else if (S.phase === "board"){
+    app.innerHTML = `<section class="slide">${slideTop(`After question ${qi+1} of ${n}`)}
+      <h1>Standings</h1>
+      <ol class="board" style="font-size:clamp(1rem,1.8vw,1.5rem)">${S.board.slice(0,8).map(r => `<li><span class="rk">${r.rank}</span><span class="nm">${esc(r.name)}</span><span class="pt">${r.total.toLocaleString("en-US")}</span></li>`).join("")}</ol>
+      <div class="slide-foot"><span class="src">${S.board.length} players</span><button class="btn" id="adv">Question ${qi+2} →</button></div></section>`;
+  } else if (S.phase === "final"){
+    const b = S.board, p = [b[1], b[0], b[2]];
+    app.innerHTML = `<section class="slide">${slideTop("Final results")}
+      <div class="final-head"><h1>The books are balanced. Happy Thanksgiving!</h1><figure class="nick sm"><img src="/static/nick.jpg" alt="Nick in his turkey costume"><figcaption>Nick approves.</figcaption></figure></div>
+      <div class="podium">${p.map((r,i) => r ? `<div class="${i===1 ? "p1" : ""}"><span class="lbl">${["2nd","1st","3rd"][i]}</span><b>${esc(r.name)}</b><span>${r.total.toLocaleString("en-US")} pts</span></div>` : "<div></div>").join("")}</div>
+      <ol class="board" start="4" style="font-size:clamp(.95rem,1.5vw,1.25rem)">${b.slice(3,12).map(r => `<li><span class="rk">${r.rank}</span><span class="nm">${esc(r.name)}</span><span class="pt">${r.total.toLocaleString("en-US")}</span></li>`).join("")}</ol>
+      <div class="slide-foot"><span class="src">${b.length} players · ${n} questions</span><div class="ctrls"><button class="ghost" id="dl">Download results</button><button class="btn" id="newg">Set up a new game</button></div></div></section>`;
+    $("#newg").onclick = () => hpost("end"); $("#dl").onclick = downloadCSV;
+  }
+  const adv = $("#adv"); if (adv) adv.onclick = () => hpost("advance");
+}
+
+document.addEventListener("keydown", e => {
+  if (!S || S.phase === "idle") return;
+  if (e.target.closest && e.target.closest("input,select,textarea,button,summary")) return;
+  if ((e.key === " " || e.key === "ArrowRight") && S.phase !== "final"){ e.preventDefault(); hpost("advance"); }
+  else if ((e.key === "p" || e.key === "P") && S.phase === "question"){ hpost("pause"); }
+  else if ((e.key === "+" || e.key === "=") && S.phase === "question"){ actions.add(); }
+  else if (e.key === "Escape" && playersOpen){ playersOpen = false; renderPlayers(); }
+});
+
+load().then(ok => {
+  if (!ok) return;
+  subscribe((s, end) => {
+    const prev = S;
+    const changed = !prev || prev.phase !== s.phase || prev.qi !== s.qi || prev.sid !== s.sid || prev.answered !== s.answered
+      || prev.board.length !== s.board.length || prev.paused !== s.paused || s.phase === "board" || s.phase === "final"
+      || (s.phase === "lobby" && JSON.stringify(prev.board) !== JSON.stringify(s.board));
+    S = s; endAt = end;
+    if (playersOpen && (!prev || JSON.stringify(prev.board.map(r => [r.pid, r.name])) !== JSON.stringify(s.board.map(r => [r.pid, r.name])))) renderPlayers();
+    // Don't re-render the setup list under the host's cursor.
+    if (changed && !(s.phase === "idle" && prev && prev.phase === "idle" && document.querySelector("#pick"))) render();
+    else { renderMenu(); const c = $("#pcount"); if (c) c.textContent = s.board.length + " players joined"; }
+  }, ok => { $("#meta").textContent = ok ? "Host screen" : "Reconnecting…"; });
+});
+</script>
+</body>
+</html>

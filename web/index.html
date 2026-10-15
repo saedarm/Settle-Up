@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1a1120">
+<title>Settle Up</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">Settle<span>Up</span></div>
+    <div class="meta" id="meta">Connecting…</div>
+  </header>
+  <main id="app" aria-live="polite">
+    <section class="receipt"><div class="r-head"><span>Connecting</span></div><h1>Settle Up</h1><p class="ctx">Loading the game…</p></section>
+  </main>
+</div>
+<script src="/static/common.js"></script>
+<script>
+let me = store.get("settleup:me") || {};   // {pid, token, name}
+let S = null, endAt = 0, tick = null, connected = false;
+const app = $("#app");
+
+function saved(){ return (S && store.get("settleup:a:" + S.sid)) || {}; }
+function save(qi, v){ const a = saved(); a[qi] = v; store.set("settleup:a:" + S.sid, a); }
+function remaining(){ return S && S.paused ? (S.remainingMs||0) : Math.max(0, endAt - Date.now()); }
+function myRow(){ return S && S.board ? S.board.find(r => r.pid === me.pid) : null; }
+
+async function joinGame(name){
+  const r = await post("/api/join", {name, pid: me.pid, token: me.token});
+  if (!r.ok) return r.error || "Couldn't join. Try again.";
+  me = {pid: r.pid, token: r.token, name: r.name}; store.set("settleup:me", me);
+  render(); return null;
+}
+
+function head(label){
+  return `<div class="r-head"><span>${label}</span><span>${esc(me.name||"")}${me.name ? ` · <button class="link" id="rename">change</button>` : ""}</span></div>`;
+}
+
+function render(){
+  clearInterval(tick);
+  $("#meta").textContent = connected ? (S && S.phase !== "idle" ? "Live game" : "Connected") : "Reconnecting…";
+  // Server restarted and forgot us: ask for the name again.
+  const known = !me.pid || !S || S.board.some(r => r.pid === me.pid) || S.phase === "idle";
+  if (!me.pid || !known){
+    app.innerHTML = `<section class="receipt"><div class="r-head"><span>Join</span><span class="tag">Thanksgiving × Halloween</span></div>
+      <h1>Estimate payments numbers. Closest guesses win.</h1>
+      <p class="ctx">Each question has a real answer from Global Payments research or holiday shopping data. You get one guess per question before the timer runs out.</p>
+      <form id="nf" class="stack" style="margin-top:18px" autocomplete="off">
+        <label class="lbl" for="nm">Your name on the leaderboard (first name and last initial)</label>
+        <div class="field"><input id="nm" maxlength="24" placeholder="e.g. Sam R" value="${esc(me.name||"")}" autocomplete="nickname"></div>
+        <div class="preview err" id="nerr"></div>
+        <button class="btn">Join the game</button>
+      </form></section>`;
+    $("#nf").onsubmit = async e => { e.preventDefault(); const n = $("#nm").value.trim(); if (!n){ $("#nm").focus(); return; }
+      $("#nerr").textContent = (await joinGame(n)) || ""; };
+    return;
+  }
+  bindRename();
+  if (!S || S.phase === "idle"){
+    app.innerHTML = `<section class="receipt">${head("Waiting room")}
+      <h2>You're in, ${esc(me.name)}.</h2><p class="ctx">The host hasn't started yet. Keep this page open; the first question will show up here.</p>
+      <div class="notice" style="margin-top:16px">Tip: the guess box is a calculator. Type <b>94b/365</b> or <b>6m*40</b>. Shorthand k, m, b, t works.</div></section>`;
+    return bindRename();
+  }
+  const q = S.question, qi = S.qi, mine = saved()[qi];
+  if (S.phase === "lobby"){
+    app.innerHTML = `<section class="receipt">${head("Lobby")}
+      <h2>You're on the board, ${esc(me.name)}.</h2>
+      <p class="ctx">${S.total} questions, ${S.dur} seconds each. Watch the big screen. Your guess box appears here when each question starts.</p>
+      <div class="notice" style="margin-top:16px">Scoring: dead on is 1,000 points, ten times off is 500, a hundred times off is zero.</div>
+      <div class="notice" style="margin-top:10px">The guess box is a calculator: <b>94b/365</b> or <b>6m*40</b> both work.</div></section>`;
+    return bindRename();
+  }
+  if (S.phase === "question" && q){
+    const row = myRow();
+    const locked = mine !== undefined || (row && row.answered);
+    if (!locked && remaining() > 0){
+      app.innerHTML = `<section class="receipt">${head(`Q${qi+1} of ${S.total}`)}
+        <div class="bar" id="pbar"><i style="width:100%"></i></div>
+        <div class="row" style="justify-content:space-between;align-items:center;margin-top:12px">${chip(q.Cat)}<span class="timer" id="ptime" style="flex:0 0 auto">--</span></div>
+        <h2 style="margin-top:12px">${esc(q.Q)}</h2><p class="ctx">${esc(q.Ctx)}</p>
+        <form id="gf" class="stack" style="margin-top:16px" autocomplete="off">
+          <label class="lbl" for="guess">Your estimate</label>
+          <div class="field">${q.Pre ? `<span class="pre">${esc(q.Pre)}</span>` : ""}<input id="guess" inputmode="text" enterkeyhint="done" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="e.g. 2.5b or 6m*40" aria-describedby="pv">${q.Unit ? `<span class="unit">${esc(q.Unit)}</span>` : ""}</div>
+          <div class="preview" id="pv">Shorthand works: k, m, b, t. So do + − × ÷.</div>
+          <button class="btn" id="lock" disabled>Lock it in</button>
+        </form></section>`;
+      const inp = $("#guess"), pv = $("#pv"), btn = $("#lock");
+      inp.oninput = () => { const v = parseGuess(inp.value);
+        if (v === null){ pv.className = "preview"; pv.textContent = "Shorthand works: k, m, b, t. So do + − × ÷."; btn.disabled = true; }
+        else if (!(v > 0)){ pv.className = "preview err"; pv.textContent = "Enter a positive number or a formula like 94b/365."; btn.disabled = true; }
+        else { pv.className = "preview"; pv.textContent = "= " + fmt(v, q.Pre) + (q.Unit ? " " + q.Unit : ""); btn.disabled = false; } };
+      $("#gf").onsubmit = async e => { e.preventDefault(); const v = parseGuess(inp.value); if (!(v > 0)) return;
+        btn.disabled = true; btn.textContent = "Sending…";
+        const r = await post("/api/answer", {pid: me.pid, token: me.token, sid: S.sid, qi, value: v});
+        if (r.ok || (r.status === 409 && r.value)){ save(qi, r.value || v); render(); }
+        else if (r.status === 401){ me = {name: me.name}; store.set("settleup:me", me); render(); }
+        else { pv.className = "preview err"; pv.textContent = r.error || "Couldn't send. Check your connection and try again."; btn.disabled = false; btn.textContent = "Lock it in"; } };
+      inp.focus({preventScroll:true});
+      const t = () => { const r = remaining(), b = $("#pbar"); if (!b) return clearInterval(tick);
+        b.firstChild.style.width = (r / (S.dur*1000) * 100) + "%"; b.classList.toggle("hurry", r < 10000);
+        $("#ptime").textContent = S.paused ? "Paused" : Math.ceil(r/1000) + "s"; if (r <= 0 && !S.paused){ clearInterval(tick); render(); } };
+      t(); tick = setInterval(t, 250); return bindRename();
+    }
+    app.innerHTML = `<section class="receipt">${head(`Q${qi+1} of ${S.total}`)}
+      ${mine !== undefined ? `<div class="lbl">Locked in</div><div class="big-num" style="margin-top:6px">${esc(fmt(mine, q.Pre))}</div><p class="ctx">${esc(q.Unit||"")}</p>`
+        : locked ? `<h2>Locked in.</h2>` : `<h2>Time's up.</h2><p class="ctx">No guess this round. You'll get the next one.</p>`}
+      <p class="ctx" style="margin-top:14px">${S.answered} of ${S.board.length} players locked in. Answer coming up on the big screen.</p></section>`;
+    return bindRename();
+  }
+  if (S.phase === "reveal" && q && S.reveal){
+    const rv = S.reveal, g = rv.guesses.find(x => x.pid === me.pid);
+    app.innerHTML = `<section class="receipt">${head(`Q${qi+1} of ${S.total} · settled`)}
+      <h2 style="font-size:1.12rem">${esc(q.Q)}</h2>
+      <div class="lines" style="margin-top:14px">
+        <div class="line"><span>Your guess</span><b>${g ? esc(fmt(g.g, q.Pre)) : "—"}</b></div>
+        <div class="line total"><span>Answer</span><b>${esc(fmt(rv.a, q.Pre))}</b></div></div>
+      ${g ? `<div class="verdict ${dir(g.g, rv.a)}" style="margin-top:16px">+${g.pts}<small>${rfmt(g.ratio)} ${dirWord(g.g, rv.a)}</small></div>${strip(rv.a, [], g.g)}`
+          : `<p class="ctx" style="margin-top:14px">No guess, no points this round.</p>`}
+      <div class="napkin" style="margin-top:16px"><div class="lbl">Napkin math</div><p>${esc(rv.math)}</p></div>${srcLine(rv)}</section>`;
+    return bindRename();
+  }
+  if (S.phase === "board" || S.phase === "final"){
+    const row = myRow(), fin = S.phase === "final";
+    app.innerHTML = `<section class="receipt">${head(fin ? "Final totals" : "Standings")}
+      <div class="lbl">${fin ? "Final score" : "Your score so far"}</div>
+      <div class="big-num" style="margin-top:6px">${row ? row.total.toLocaleString("en-US") : 0}</div>
+      ${row ? `<p class="ctx">${ordinal(row.rank)} of ${S.board.length}</p>` : ""}
+      <ol class="board" style="margin-top:16px">${S.board.slice(0,10).map(r => `<li class="${r.pid===me.pid?"me":""}"><span class="rk">${r.rank}</span><span class="nm">${esc(r.name)}</span><span class="pt">${r.total.toLocaleString("en-US")}</span></li>`).join("")}</ol>
+      ${fin ? `<p class="ctx" style="margin-top:14px">Thanks for playing. Happy Thanksgiving, and enjoy the leftover Halloween candy.</p>` : ""}</section>`;
+    return bindRename();
+  }
+}
+function bindRename(){
+  const b = $("#rename"); if (!b) return;
+  b.onclick = () => { const n = prompt("New name", me.name); if (n && n.trim()) joinGame(n.trim()); };
+}
+
+subscribe((s, end) => {
+  const changed = !S || S.phase !== s.phase || S.qi !== s.qi || S.sid !== s.sid || S.answered !== s.answered || S.board.length !== s.board.length
+    || (me.pid && S.board.some(r => r.pid === me.pid) !== s.board.some(r => r.pid === me.pid))
+    || (me.pid && (S.board.find(r => r.pid === me.pid)||{}).name !== (s.board.find(r => r.pid === me.pid)||{}).name);
+  S = s; endAt = end;
+  const mine = me.pid && s.board.find(r => r.pid === me.pid);
+  if (mine && mine.name !== me.name){ me.name = mine.name; store.set("settleup:me", me); }
+  // Don't wipe a half-typed guess when only the clock was re-synced.
+  const typing = document.activeElement && document.activeElement.id === "guess";
+  if (changed && !(typing && s.phase === "question")) render();
+}, ok => { connected = ok; $("#meta").textContent = ok ? (S && S.phase !== "idle" ? "Live game" : "Connected") : "Reconnecting…"; });
+decorate(7);
+render();
+</script>
+</body>
+</html>
