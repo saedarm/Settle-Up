@@ -1,6 +1,6 @@
 # Settle Up
 
-A live estimation game for the Global Payments Thanksgiving/Halloween breakfast.
+A live estimation game for the Thanksgiving/Halloween breakfast.
 Everyone plays on their phone at the main URL; the host runs the slides at `/host`.
 No accounts, no sign-in.
 
