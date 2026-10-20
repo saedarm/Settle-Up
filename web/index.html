@@ -22,7 +22,7 @@
 <script src="/static/common.js"></script>
 <script>
 let me = store.get("settleup:me") || {};   // {pid, token, name}
-let S = null, endAt = 0, tick = null, connected = false;
+let S = null, endAt = 0, tick = null, connected = false, draft = null;
 const app = $("#app");
 
 function saved(){ return (S && store.get("settleup:a:" + S.sid)) || {}; }
@@ -80,7 +80,7 @@ function render(){
   if (!S || S.phase === "idle"){
     app.innerHTML = `<section class="receipt">${head("Waiting room")}
       <h2>You're in, ${esc(me.name)}.</h2><p class="ctx">The host hasn't started yet. Keep this page open; the first question will show up here.</p>
-      <div class="notice" style="margin-top:16px">Tip: the guess box is a calculator. Type <b>94b/365</b> or <b>6m*40</b>. Shorthand k, m, b, t works.</div></section>`;
+      <div class="notice" style="margin-top:16px">Tip: some questions use a slider. For the rest, type a number and tap how big it is (thousand, million, billion…).</div></section>`;
     return bindRename();
   }
   const q = S.question, qi = S.qi, mine = saved()[qi];
@@ -88,36 +88,70 @@ function render(){
     app.innerHTML = `<section class="receipt">${head("Lobby")}
       <h2>You're on the board, ${esc(me.name)}.</h2>
       <p class="ctx">${S.total} questions, ${S.dur} seconds each. Watch the big screen. Your guess box appears here when each question starts.</p>
-      <div class="notice" style="margin-top:16px">Scoring: dead on is 1,000 points, ten times off is 500, a hundred times off is zero.</div>
-      <div class="notice" style="margin-top:10px">The guess box is a calculator: <b>94b/365</b> or <b>6m*40</b> both work.</div></section>`;
+      <div class="notice" style="margin-top:16px">Scoring: within 10% of the answer is 1,000 points. Half or double is 700. Ten times off still gets 250.</div>
+      <div class="notice" style="margin-top:10px">Some questions use a slider. For the rest, type a number and tap how big it is: thousand, million, billion…</div></section>`;
     return bindRename();
   }
   if (S.phase === "question" && q){
     const row = myRow();
     const locked = mine !== undefined || (row && row.answered);
     if (!locked && remaining() > 0){
+      // Keep a half-finished guess when the screen redraws (e.g. someone else locks in).
+      if (!draft || draft.key !== S.sid + ":" + qi) draft = {key: S.sid + ":" + qi, text: "", scale: 0, slide: null};
+      const slider = isSlider(q);
+      const mid = slider ? Math.round(((q.Min + q.Max) / 2) / q.Step) * q.Step : 0;
+      const input = slider ? `
+          <div class="slider-val"><span id="sv">${esc(fmt(draft.slide ?? mid, q.Pre))}</span> <small>${esc(q.Unit||"")}</small></div>
+          <input type="range" id="slide" min="${q.Min}" max="${q.Max}" step="${q.Step}" value="${draft.slide ?? mid}" aria-label="Your estimate">
+          <div class="scale"><span>${esc(fmt(q.Min, q.Pre))}</span><span>${esc(fmt(q.Max, q.Pre))}</span></div>
+          <div class="nudge"><button type="button" class="ghost" id="dn" aria-label="Lower">−</button><span class="preview">Drag, or tap − / + to fine-tune</span><button type="button" class="ghost" id="up" aria-label="Higher">+</button></div>`
+        : `
+          <div class="field">${q.Pre ? `<span class="pre">${esc(q.Pre)}</span>` : ""}<input id="guess" inputmode="decimal" enterkeyhint="done" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="e.g. 13.5" aria-describedby="pv" value="${esc(draft.text)}">${q.Unit ? `<span class="unit">${esc(q.Unit)}</span>` : ""}</div>
+          <div class="lbl" id="scl">How big?</div>
+          <div class="scales" role="radiogroup" aria-labelledby="scl">${SCALES.map(([m, n]) => `<button type="button" role="radio" class="sc" data-m="${m}" aria-checked="false">${n}</button>`).join("")}</div>
+          <div class="preview" id="pv"></div>`;
       app.innerHTML = `<section class="receipt">${head(`Q${qi+1} of ${S.total}`)}
         <div class="bar" id="pbar"><i style="width:100%"></i></div>
         <div class="row" style="justify-content:space-between;align-items:center;margin-top:12px">${chip(q.Cat)}<span class="timer" id="ptime" style="flex:0 0 auto">--</span></div>
         <h2 style="margin-top:12px">${esc(q.Q)}</h2><p class="ctx">${esc(q.Ctx)}</p>
         <form id="gf" class="stack" style="margin-top:16px" autocomplete="off">
-          <label class="lbl" for="guess">Your estimate</label>
-          <div class="field">${q.Pre ? `<span class="pre">${esc(q.Pre)}</span>` : ""}<input id="guess" inputmode="text" enterkeyhint="done" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" placeholder="e.g. 2.5b or 6m*40" aria-describedby="pv">${q.Unit ? `<span class="unit">${esc(q.Unit)}</span>` : ""}</div>
-          <div class="preview" id="pv">Shorthand works: k, m, b, t. So do + − × ÷.</div>
-          <button class="btn" id="lock" disabled>Lock it in</button>
+          <label class="lbl" for="${slider ? "slide" : "guess"}">Your estimate</label>${input}
+          <button class="btn" id="lock" ${slider ? "" : "disabled"}>Lock it in</button>
+          <div class="preview err" id="perr"></div>
         </form></section>`;
-      const inp = $("#guess"), pv = $("#pv"), btn = $("#lock");
-      inp.oninput = () => { const v = parseGuess(inp.value);
-        if (v === null){ pv.className = "preview"; pv.textContent = "Shorthand works: k, m, b, t. So do + − × ÷."; btn.disabled = true; }
-        else if (!(v > 0)){ pv.className = "preview err"; pv.textContent = "Enter a positive number or a formula like 94b/365."; btn.disabled = true; }
-        else { pv.className = "preview"; pv.textContent = "= " + fmt(v, q.Pre) + (q.Unit ? " " + q.Unit : ""); btn.disabled = false; } };
-      $("#gf").onsubmit = async e => { e.preventDefault(); const v = parseGuess(inp.value); if (!(v > 0)) return;
+      const btn = $("#lock"), perr = $("#perr");
+      let current = () => null;
+      if (slider){
+        const sl = $("#slide"), sv = $("#sv");
+        const upd = () => { draft.slide = +sl.value; sv.textContent = fmt(+sl.value, q.Pre); };
+        sl.oninput = upd;
+        $("#dn").onclick = () => { sl.value = Math.max(q.Min, +sl.value - q.Step); upd(); };
+        $("#up").onclick = () => { sl.value = Math.min(q.Max, +sl.value + q.Step); upd(); };
+        current = () => +sl.value;
+      } else {
+        const inp = $("#guess"), pv = $("#pv"), chips = [...document.querySelectorAll(".sc")];
+        const upd = () => {
+          draft.text = inp.value;
+          const raw = parseGuess(inp.value), suffix = hasSuffix(inp.value);
+          chips.forEach(c => { const on = !suffix && +c.dataset.m === draft.scale; c.setAttribute("aria-checked", on); c.disabled = suffix; });
+          let v = null;
+          if (raw === null){ pv.className = "preview"; pv.textContent = "Type a number, then tap how big it is."; }
+          else if (!(raw > 0)){ pv.className = "preview err"; pv.textContent = "Enter a positive number, like 13.5 or 94/365."; }
+          else if (!suffix && !draft.scale){ pv.className = "preview err"; pv.textContent = "Now tap how big: units, thousand, million, billion or trillion."; }
+          else { v = suffix ? raw : raw * draft.scale; pv.className = "preview ok"; pv.textContent = "= " + fmt(v, q.Pre) + (q.Unit ? " " + q.Unit : ""); }
+          btn.disabled = v === null; current = () => v;
+        };
+        inp.oninput = upd;
+        chips.forEach(c => c.onclick = () => { draft.scale = +c.dataset.m; upd(); });
+        upd();
+        if (!draft.text) inp.focus({preventScroll:true});
+      }
+      $("#gf").onsubmit = async e => { e.preventDefault(); const v = current(); if (v === null || v === undefined) return;
         btn.disabled = true; btn.textContent = "Sending…";
         const r = await post("/api/answer", {pid: me.pid, token: me.token, sid: S.sid, qi, value: v});
-        if (r.ok || (r.status === 409 && r.value)){ save(qi, r.value || v); render(); }
+        if (r.ok || (r.status === 409 && r.value !== undefined)){ save(qi, r.value ?? v); draft = null; render(); }
         else if (r.status === 401){ me = {name: me.name}; store.set("settleup:me", me); render(); }
-        else { pv.className = "preview err"; pv.textContent = r.error || "Couldn't send. Check your connection and try again."; btn.disabled = false; btn.textContent = "Lock it in"; } };
-      inp.focus({preventScroll:true});
+        else { perr.textContent = r.error || "Couldn't send. Check your connection and try again."; btn.disabled = false; btn.textContent = "Lock it in"; } };
       const t = () => { const r = remaining(), b = $("#pbar"); if (!b) return clearInterval(tick);
         b.firstChild.style.width = (r / (S.dur*1000) * 100) + "%"; b.classList.toggle("hurry", r < 10000);
         $("#ptime").textContent = S.paused ? "Paused" : Math.ceil(r/1000) + "s"; if (r <= 0 && !S.paused){ clearInterval(tick); render(); } };
@@ -136,7 +170,7 @@ function render(){
       <div class="lines" style="margin-top:14px">
         <div class="line"><span>Your guess</span><b>${g ? esc(fmt(g.g, q.Pre)) : "—"}</b></div>
         <div class="line total"><span>Answer</span><b>${esc(fmt(rv.a, q.Pre))}</b></div></div>
-      ${g ? `<div class="verdict ${dir(g.g, rv.a)}" style="margin-top:16px">+${g.pts}<small>${rfmt(g.ratio)} ${dirWord(g.g, rv.a)}</small></div>${strip(rv.a, [], g.g)}`
+      ${g ? `<div class="verdict ${dirFor(q, g.g, rv.a)}" style="margin-top:16px">+${g.pts}<small>${esc(offText(q, g.g, rv.a))}</small></div>${stripFor(q, rv.a, [], g.g)}`
           : `<p class="ctx" style="margin-top:14px">No guess, no points this round.</p>`}
       <div class="napkin" style="margin-top:16px"><div class="lbl">Napkin math</div><p>${esc(rv.math)}</p></div>${srcLine(rv)}</section>`;
     return bindRename();
@@ -165,7 +199,7 @@ subscribe((s, end) => {
   const mine = me.pid && s.board.find(r => r.pid === me.pid);
   if (mine && mine.name !== me.name){ me.name = mine.name; store.set("settleup:me", me); }
   // Don't wipe a half-typed guess when only the clock was re-synced.
-  const typing = document.activeElement && document.activeElement.id === "guess";
+  const typing = !!(document.activeElement && document.activeElement.closest && document.activeElement.closest("#gf"));
   if (changed && !(typing && s.phase === "question")) render();
 }, ok => { connected = ok; $("#meta").textContent = ok ? (S && S.phase !== "idle" ? "Live game" : "Connected") : "Reconnecting…"; });
 decorate(7);

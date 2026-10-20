@@ -52,8 +52,16 @@ their name again and can keep playing from the next question.
 
 The restart and end buttons ask for a second click so they can't be hit by accident.
 
-Scoring: `1000 × (1 − log10(off-by multiple) / 2)`. Dead on = 1,000, 2× off = 849,
-10× off = 500, 100× off or worse = 0. Ties go to whoever was closer overall.
+Scoring is in bands (see `scoring.go` to change them):
+
+- Number-box questions are judged by how many times off the guess is: within 10% = 1,000,
+  25% = 900, 1.5× = 800, half/double = 700, 3× = 550, 5× = 400, 10× = 250, 100× = 50, worse = 0.
+  Players must tap a size (units / thousand / million / billion / trillion) or type a suffix
+  like `13.5b`, so "13" can't silently mean $13.
+- Slider questions (listed in `sliders` in `scoring.go`) are judged by distance as a share of the
+  slider's range: within 2% = 1,000, 5% = 800, 10% = 600, 15% = 450, 25% = 300, 40% = 150.
+
+Ties go to whoever was closer overall.
 
 ## Editing questions
 
@@ -65,4 +73,5 @@ guess box, a hint (`Ctx`), the napkin math shown at the reveal, and its source.
 
 - `main.go`: server, game state, scoring, live updates (Server-Sent Events)
 - `questions.go`: question bank
+- `scoring.go`: point bands and which questions use a slider
 - `web/`: phone page, host page, shared CSS/JS, bundled QR code library (MIT, Kazuhiko Arase)

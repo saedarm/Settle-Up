@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"io/fs"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"sort"
@@ -28,6 +27,8 @@ type Question struct {
 	ID, Cat, Q, Pre, Unit, Ctx, Math, Src, URL string
 	A                                          float64
 	Derived                                    bool
+	Kind                                       string // "" = type a number, "slider" = pick on a bounded slider
+	Min, Max, Step                             float64
 }
 
 type Player struct {
@@ -62,6 +63,9 @@ const grace = 1500 * time.Millisecond
 
 func main() {
 	for _, q := range bank {
+		if sl, ok := sliders[q.ID]; ok {
+			q.Kind, q.Min, q.Max, q.Step = "slider", sl.Min, sl.Max, sl.Step
+		}
 		byID[q.ID] = q
 	}
 	hostKey = os.Getenv("HOST_KEY")
@@ -245,8 +249,8 @@ func answer(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 401, map[string]string{"error": "rejoin"})
 	case g.phase != "question" || in.QI != g.qi || in.Sid != g.sid || (!g.paused && time.Now().After(g.endsAt.Add(grace))):
 		writeJSON(w, 409, map[string]string{"error": "Time's up for that question."})
-	case !(in.Value > 0) || math.IsInf(in.Value, 0) || in.Value > 1e18:
-		writeJSON(w, 400, map[string]string{"error": "Enter a positive number."})
+	case !validGuess(byID[g.ids[g.qi]], in.Value):
+		writeJSON(w, 400, map[string]string{"error": "That guess is out of range. Try again."})
 	default:
 		if _, done := p.Answers[g.qi]; done {
 			writeJSON(w, 409, map[string]any{"error": "Already locked in.", "value": p.Answers[g.qi]})
@@ -398,24 +402,11 @@ func (g *Game) uniqueName(name, self string) string {
 	return out
 }
 
-func points(r float64) int {
-	if math.IsInf(r, 0) || r >= 100 {
-		return 0
-	}
-	return int(math.Round(1000 * (1 - math.Log10(r)/2)))
-}
-
-func ratio(g, a float64) float64 {
-	if !(g > 0) {
-		return math.Inf(1)
-	}
-	return math.Max(g/a, a/g)
-}
-
 /* ---------- public state ---------- */
 
 type pubQ struct {
-	ID, Cat, Q, Pre, Unit, Ctx string
+	ID, Cat, Q, Pre, Unit, Ctx, Kind string
+	Min, Max, Step                   float64
 }
 type pubGuess struct {
 	PID   string  `json:"pid"`
@@ -423,6 +414,7 @@ type pubGuess struct {
 	G     float64 `json:"g"`
 	Ratio float64 `json:"ratio"`
 	Pts   int     `json:"pts"`
+	Err   float64 `json:"-"`
 }
 type pubReveal struct {
 	A       float64    `json:"a"`
@@ -467,7 +459,7 @@ func (g *Game) stateLocked() []byte {
 	if g.phase != "idle" && g.qi < len(g.ids) {
 		q = byID[g.ids[g.qi]]
 		if g.phase == "question" || g.phase == "reveal" {
-			s.Question = &pubQ{q.ID, q.Cat, q.Q, q.Pre, q.Unit, q.Ctx}
+			s.Question = &pubQ{q.ID, q.Cat, q.Q, q.Pre, q.Unit, q.Ctx, q.Kind, q.Min, q.Max, q.Step}
 		}
 	}
 	// Scores through the last question that has been revealed.
@@ -485,9 +477,9 @@ func (g *Game) stateLocked() []byte {
 		a := acc{row: pubRow{PID: p.ID, Name: p.Name}}
 		for i := 0; i <= upto && i < len(g.ids); i++ {
 			if v, ok := p.Answers[i]; ok {
-				r := ratio(v, byID[g.ids[i]].A)
-				a.row.Total += points(r)
-				a.err += math.Log10(r)
+				pts, e := score(byID[g.ids[i]], v)
+				a.row.Total += pts
+				a.err += e
 			} else {
 				a.err += 2
 			}
@@ -513,11 +505,11 @@ func (g *Game) stateLocked() []byte {
 		for _, id := range g.order {
 			p := g.players[id]
 			if v, ok := p.Answers[g.qi]; ok {
-				r := ratio(v, q.A)
-				rv.Guesses = append(rv.Guesses, pubGuess{p.ID, p.Name, v, r, points(r)})
+				pts, e := score(q, v)
+				rv.Guesses = append(rv.Guesses, pubGuess{p.ID, p.Name, v, ratio(v, q.A), pts, e})
 			}
 		}
-		sort.SliceStable(rv.Guesses, func(i, j int) bool { return rv.Guesses[i].Ratio < rv.Guesses[j].Ratio })
+		sort.SliceStable(rv.Guesses, func(i, j int) bool { return rv.Guesses[i].Err < rv.Guesses[j].Err })
 		s.Reveal = rv
 	}
 	b, _ := json.Marshal(s)

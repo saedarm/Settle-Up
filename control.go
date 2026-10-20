@@ -149,7 +149,7 @@ func hostResultsCSV(w http.ResponseWriter, r *http.Request) {
 		rec := []string{strconv.Itoa(row.Rank), row.Name, strconv.Itoa(row.Total)}
 		for i, id := range g.ids {
 			if v, ok := p.Answers[i]; ok {
-				rec = append(rec, strconv.FormatFloat(v, 'g', 6, 64), strconv.Itoa(points(ratio(v, byID[id].A))))
+				rec = append(rec, strconv.FormatFloat(v, 'g', 6, 64), strconv.Itoa(first(score(byID[id], v))))
 			} else {
 				rec = append(rec, "", "0")
 			}

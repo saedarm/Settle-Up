@@ -161,3 +161,20 @@ footer a{color:inherit}
 .final-head{display:flex;justify-content:space-between;align-items:center;gap:20px}
 .lobby-side .qr svg{width:clamp(140px,14vw,200px)}
 @media (prefers-reduced-motion:no-preference){.nick{animation:wobble 6s ease-in-out infinite}@keyframes wobble{0%,100%{transform:rotate(-3deg)}50%{transform:rotate(-1deg) translateY(-3px)}}.nick.sm{animation:none}}
+
+/* ---- slider questions and the size picker ---- */
+.slider-val{font-family:var(--display);font-weight:800;font-size:2.6rem;line-height:1;color:var(--gold);text-align:center;margin-top:4px}
+.slider-val small{font-family:var(--mono);font-size:.8rem;font-weight:500;color:var(--muted)}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:44px;background:transparent;margin:0;touch-action:pan-y}
+input[type=range]::-webkit-slider-runnable-track{height:10px;border-radius:5px;background:linear-gradient(90deg,var(--accent),var(--gold))}
+input[type=range]::-moz-range-track{height:10px;border-radius:5px;background:linear-gradient(90deg,var(--accent),var(--gold))}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:34px;height:34px;border-radius:50%;background:var(--ink);border:4px solid var(--accent);margin-top:-12px;box-shadow:0 4px 10px rgba(0,0,0,.5)}
+input[type=range]::-moz-range-thumb{width:28px;height:28px;border-radius:50%;background:var(--ink);border:4px solid var(--accent)}
+.nudge{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.nudge .ghost{min-width:56px;font-size:1.4rem;line-height:1;padding:8px 0}
+.scales{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:6px}
+.sc{font:inherit;font-size:.82rem;padding:12px 2px;border:1.5px solid var(--muted);border-radius:4px;background:transparent;color:var(--ink);cursor:pointer;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.sc[aria-checked="true"]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.sc:disabled{opacity:.35;cursor:not-allowed}
+.preview.ok{color:var(--good)}
+@media (max-width:440px){.scales{grid-template-columns:repeat(3,minmax(0,1fr))}}

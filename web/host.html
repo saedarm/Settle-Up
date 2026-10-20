@@ -179,7 +179,7 @@ function render(){
   if (S.phase === "lobby"){
     app.innerHTML = `<section class="slide">${slideTop(`Lobby · ${n} questions · ${S.dur}s each`)}
       <div class="two"><div class="stack"><h1 style="font-size:clamp(1.6rem,3.3vw,2.9rem)">Grab your phone. Estimate payments numbers. Closest guesses win.</h1>
-          <p class="ctx">Scan the code or go to the address below and enter your name. One guess per question before the clock runs out. Dead on is 1,000 points, ten times off is 500, a hundred times off is zero.</p>
+          <p class="ctx">Scan the code or go to the address below and enter your name. One guess per question before the clock runs out. Within 10% of the answer is 1,000 points, half or double is 700, ten times off still gets 250. Some questions use a slider; for the rest, type a number and tap how big it is.</p>
           <div class="joinurl">${esc(joinURL.replace(/^https?:\/\//, ""))}</div></div>
         <div class="lobby-side"><figure class="nick"><img src="/static/nick.jpg" alt="Nick in a turkey costume with a witch hat, holding a giant Global Payments card"><figcaption>Nick dressed for both holidays.<br>Least you can do is guess.</figcaption></figure><div class="qr" id="qr" aria-label="QR code for ${esc(joinURL)}"></div></div></div>
       <div class="stack"><div class="lbl">${S.board.length} ${S.board.length === 1 ? "player" : "players"} in</div>
@@ -188,7 +188,7 @@ function render(){
     if (window.qrcode){ try { const qr = qrcode(0, "M"); qr.addData(joinURL); qr.make(); $("#qr").innerHTML = qr.createSvgTag({cellSize: 8, margin: 0, scalable: true}); } catch(e){} }
   } else if (S.phase === "question" && q){
     app.innerHTML = `<section class="slide">${slideTop(`Question ${qi+1} of ${n}`)}
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${chip(q.Cat)}${S.paused ? '<span class="paused-pill">Paused</span>' : ""}</div>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">${chip(q.Cat)}${isSlider(q) ? `<span class="chip" style="color:var(--gold)">Slider · ${esc(fmt(q.Min, q.Pre))}–${esc(fmt(q.Max, q.Pre))}</span>` : ""}${S.paused ? '<span class="paused-pill">Paused</span>' : ""}</div>
       <h1>${esc(q.Q)}</h1><p class="ctx">${esc(q.Ctx)}</p>
       <div class="bar" id="hbar"><i style="width:100%"></i></div>
       <div class="slide-foot"><div><div class="clock" id="clock">--</div><div class="answered">${S.answered} of ${S.board.length} locked in</div></div>
@@ -203,8 +203,8 @@ function render(){
     app.innerHTML = `<section class="slide">${slideTop(`Question ${qi+1} of ${n} · the answer`)}
       <h2 style="font-size:clamp(1.1rem,2vw,1.6rem)">${esc(q.Q)}</h2>
       <div class="two"><div class="stack"><div class="reveal-num">${esc(fmt(rv.a, q.Pre))}</div><p class="ctx">${esc(q.Unit||"")}</p>
-          ${strip(rv.a, rv.guesses.map(x => x.g))}
-          <p class="answered">${rv.guesses.length} ${rv.guesses.length === 1 ? "guess" : "guesses"}${best ? ` · closest: <b style="color:var(--good)">${esc(best.name)}</b> at ${esc(fmt(best.g, q.Pre))} (${rfmt(best.ratio)})` : ""}</p></div>
+          ${stripFor(q, rv.a, rv.guesses.map(x => x.g))}
+          <p class="answered">${rv.guesses.length} ${rv.guesses.length === 1 ? "guess" : "guesses"}${best ? ` · closest: <b style="color:var(--good)">${esc(best.name)}</b> at ${esc(fmt(best.g, q.Pre))} (${esc(isSlider(q) ? (Math.abs(best.g - rv.a) < 1e-9 ? "dead on" : "off by " + fmt(Math.abs(best.g - rv.a), q.Pre)) : rfmt(best.ratio))})` : ""}</p></div>
         <div class="stack"><div class="napkin"><div class="lbl">Napkin math</div><p style="font-size:clamp(1rem,1.5vw,1.25rem)">${esc(rv.math)}</p></div>${srcLine(rv)}</div></div>
       <div class="slide-foot"><span class="src">Space or → advances</span><button class="btn" id="adv">${qi >= n-1 ? "Final results →" : "Standings →"}</button></div></section>`;
   } else if (S.phase === "board"){

@@ -90,3 +90,31 @@ function toast(msg){
   const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; t.setAttribute("role", "status");
   document.body.appendChild(t); setTimeout(() => t.remove(), 2200);
 }
+
+// ---- sliders and size picker ----
+const SCALES = [[1, "units"], [1e3, "thousand"], [1e6, "million"], [1e9, "billion"], [1e12, "trillion"]];
+// True when the typed text already says how big it is ("13b", "6 million").
+const hasSuffix = s => /\d\s*(k|m|mm|b|bn|t|tn|thousand|million|billion|trillion)\b/i.test(String(s));
+const isSlider = q => q && q.Kind === "slider";
+function stripLin(a, min, max, guesses, you){
+  const p = x => Math.min(98, Math.max(2, (x - min) / (max - min) * 100));
+  const ticks = [0,25,50,75,100].map(v => `<span class="tick" style="left:${v}%"></span>`).join("");
+  const dots = (guesses||[]).map(g => `<span class="dotg" style="left:${p(g)}%"></span>`).join("");
+  const lab = v => (+v.toFixed(1)).toLocaleString("en-US");
+  return `<div aria-label="Guesses compared with the answer"><div class="track">${ticks}${dots}<span class="mark ans" style="left:${p(a)}%"><i></i></span>${you !== undefined ? `<span class="mark you" style="left:${p(you)}%">YOU<i></i></span>` : ""}</div>
+  <div class="scale"><span>${lab(min)}</span><span>${lab(min+(max-min)/4)}</span><span>${lab(min+(max-min)/2)}</span><span>${lab(min+3*(max-min)/4)}</span><span>${lab(max)}</span></div></div>`;
+}
+// Strip for either kind of question.
+function stripFor(q, a, guesses, you){ return isSlider(q) ? stripLin(a, q.Min, q.Max, guesses, you) : strip(a, guesses, you); }
+// "1.05× too high" for typed answers, "off by 3" for sliders.
+function offText(q, g, a){
+  if (isSlider(q)){
+    const d = Math.abs(g - a), close = d / (q.Max - q.Min) <= 0.02;
+    return close ? "Nailed it" : `off by ${fmt(d, q.Pre)} · ${g < a ? "too low" : "too high"}`;
+  }
+  return `${rfmt(Math.max(g/a, a/g))} ${dirWord(g, a)}`;
+}
+function dirFor(q, g, a){
+  if (isSlider(q)) return Math.abs(g - a) / (q.Max - q.Min) <= 0.02 ? "good" : g < a ? "low" : "high";
+  return dir(g, a);
+}
